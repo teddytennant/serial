@@ -150,6 +150,13 @@ fun ReaderScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(MaterialTheme.colorScheme.background.copy(alpha = 0.7f))
+                            .clickable(
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() }
+                            ) {
+                                showControls = false
+                                viewModel.play()
+                            }
                     ) {
                         // Top bar
                         Row(
@@ -395,6 +402,7 @@ private fun RsvpWordDisplay(
                     append(word.afterOrp)
                 }
             },
+            color = MaterialTheme.colorScheme.onBackground,
             fontSize = textSize.sp,
             fontFamily = FontFamily.Monospace,
             textAlign = TextAlign.Center,

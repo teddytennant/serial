@@ -39,10 +39,12 @@ class EpubParser(private val context: Context) {
 
         val chapters = opf.spineItems.mapNotNull { href ->
             val content = entries[href] ?: return@mapNotNull null
-            val text = extractText(String(content))
+            val htmlString = String(content)
+            if (isFrontMatter(htmlString, href)) return@mapNotNull null
+            val text = extractText(htmlString)
             val words = tokenize(text)
-            if (words.isEmpty()) return@mapNotNull null
-            val title = extractChapterTitle(String(content)) ?: "Chapter"
+            if (words.size < 10) return@mapNotNull null // skip near-empty pages
+            val title = extractChapterTitle(htmlString) ?: "Chapter"
             EpubChapter(title = title, words = words)
         }
 
@@ -52,6 +54,49 @@ class EpubParser(private val context: Context) {
             chapters = chapters,
             coverPath = coverPath
         )
+    }
+
+    private fun isFrontMatter(html: String, href: String): Boolean {
+        val hrefLower = href.lowercase()
+        val frontMatterPaths = listOf(
+            "cover", "title", "copyright", "rights", "toc", "contents",
+            "dedication", "epigraph", "foreword", "preface", "acknowledgment",
+            "halftitle", "frontmatter", "front_matter", "also-by", "also_by",
+            "aboutauthor", "about-author", "about_author"
+        )
+        if (frontMatterPaths.any { hrefLower.contains(it) }) return true
+
+        val doc = Jsoup.parse(html)
+        val body = doc.body() ?: return true
+        val bodyText = body.text().trim()
+
+        // Skip pages with very little text (likely cover/title pages)
+        if (bodyText.length < 50) return true
+
+        // Check for common front matter class/id patterns
+        val allElements = body.allElements
+        for (el in allElements) {
+            val classes = el.classNames().joinToString(" ").lowercase()
+            val id = (el.id() ?: "").lowercase()
+            val combined = "$classes $id"
+            if (frontMatterPaths.any { combined.contains(it) }) {
+                // Only skip if this element is a major container
+                if (el.tagName() in listOf("body", "div", "section", "article")) return true
+            }
+        }
+
+        // Check for copyright markers in short pages
+        if (bodyText.length < 500) {
+            val lower = bodyText.lowercase()
+            if (lower.contains("all rights reserved") ||
+                lower.contains("copyright ©") ||
+                lower.contains("isbn") ||
+                lower.contains("published by") ||
+                lower.contains("table of contents")
+            ) return true
+        }
+
+        return false
     }
 
     private fun readZipEntries(uri: Uri): Map<String, ByteArray> {
@@ -150,28 +195,35 @@ class EpubParser(private val context: Context) {
         return sb.toString().trim()
     }
 
+    private val blockTags = setOf(
+        "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+        "br", "li", "blockquote", "section", "article", "hr",
+        "ol", "ul", "dl", "dt", "dd", "figure", "figcaption",
+        "table", "tr", "pre"
+    )
+
     private fun extractTextRecursive(element: Element, sb: StringBuilder) {
         for (node in element.childNodes()) {
             when (node) {
                 is TextNode -> {
-                    val text = node.text().trim()
-                    if (text.isNotEmpty()) {
-                        if (sb.isNotEmpty() && !sb.endsWith(' ') && !sb.endsWith('\n')) {
-                            sb.append(' ')
-                        }
-                        sb.append(text)
+                    val text = node.wholeText()
+                    // Collapse internal whitespace but preserve word boundaries
+                    val collapsed = text.replace(Regex("\\s+"), " ")
+                    if (collapsed.isNotBlank()) {
+                        sb.append(collapsed)
                     }
                 }
                 is Element -> {
                     val tag = node.tagName().lowercase()
-                    if (tag in setOf("p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "br", "li", "blockquote")) {
-                        if (sb.isNotEmpty() && !sb.endsWith('\n')) {
+                    if (tag in blockTags) {
+                        if (sb.isNotEmpty() && !sb.endsWith('\n') && !sb.endsWith(' ')) {
                             sb.append('\n')
                         }
                     }
+                    // Inline elements (span, em, i, b, strong, a, etc.) - no extra space
                     extractTextRecursive(node, sb)
-                    if (tag in setOf("p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote")) {
-                        if (sb.isNotEmpty() && !sb.endsWith('\n')) {
+                    if (tag in blockTags) {
+                        if (sb.isNotEmpty() && !sb.endsWith('\n') && !sb.endsWith(' ')) {
                             sb.append('\n')
                         }
                     }
@@ -194,6 +246,10 @@ class EpubParser(private val context: Context) {
     }
 
     private fun tokenize(text: String): List<String> {
-        return text.split(Regex("\\s+")).filter { it.isNotBlank() }
+        return text
+            .replace(Regex("[\\u00AD\\u200B\\u200C\\u200D\\uFEFF]"), "") // strip soft hyphens & zero-width chars
+            .split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+            .map { it.trim() }
     }
 }
