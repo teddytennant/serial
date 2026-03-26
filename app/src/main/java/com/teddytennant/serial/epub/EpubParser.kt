@@ -1,0 +1,199 @@
+package com.teddytennant.serial.epub
+
+import android.content.Context
+import android.graphics.BitmapFactory
+import android.net.Uri
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
+import org.jsoup.nodes.TextNode
+import java.io.File
+import java.io.InputStream
+import java.util.zip.ZipInputStream
+import javax.xml.parsers.DocumentBuilderFactory
+
+data class EpubBook(
+    val title: String,
+    val author: String,
+    val chapters: List<EpubChapter>,
+    val coverPath: String?
+)
+
+data class EpubChapter(
+    val title: String,
+    val words: List<String>
+)
+
+class EpubParser(private val context: Context) {
+
+    fun parse(uri: Uri): EpubBook {
+        val entries = readZipEntries(uri)
+        val containerXml = entries["META-INF/container.xml"]
+            ?: error("Invalid EPUB: missing container.xml")
+
+        val opfPath = parseContainerXml(containerXml)
+        val opfDir = opfPath.substringBeforeLast("/", "")
+        val opfContent = entries[opfPath] ?: error("Invalid EPUB: missing OPF at $opfPath")
+
+        val opf = parseOpf(opfContent, opfDir)
+        val coverPath = extractCover(entries, opf, opfDir)
+
+        val chapters = opf.spineItems.mapNotNull { href ->
+            val content = entries[href] ?: return@mapNotNull null
+            val text = extractText(String(content))
+            val words = tokenize(text)
+            if (words.isEmpty()) return@mapNotNull null
+            val title = extractChapterTitle(String(content)) ?: "Chapter"
+            EpubChapter(title = title, words = words)
+        }
+
+        return EpubBook(
+            title = opf.title,
+            author = opf.author,
+            chapters = chapters,
+            coverPath = coverPath
+        )
+    }
+
+    private fun readZipEntries(uri: Uri): Map<String, ByteArray> {
+        val entries = mutableMapOf<String, ByteArray>()
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            ZipInputStream(stream).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory) {
+                        entries[entry.name] = zip.readBytes()
+                    }
+                    entry = zip.nextEntry
+                }
+            }
+        }
+        return entries
+    }
+
+    private fun parseContainerXml(data: ByteArray): String {
+        val doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
+            .parse(data.inputStream())
+        val rootfiles = doc.getElementsByTagName("rootfile")
+        return rootfiles.item(0)?.attributes?.getNamedItem("full-path")?.nodeValue
+            ?: error("Invalid container.xml")
+    }
+
+    private data class OpfData(
+        val title: String,
+        val author: String,
+        val spineItems: List<String>,
+        val manifest: Map<String, String>,
+        val coverItemId: String?
+    )
+
+    private fun parseOpf(data: ByteArray, opfDir: String): OpfData {
+        val doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
+            .parse(data.inputStream())
+
+        val title = doc.getElementsByTagName("dc:title").item(0)?.textContent ?: "Unknown"
+        val author = doc.getElementsByTagName("dc:creator").item(0)?.textContent ?: "Unknown"
+
+        // Build manifest: id -> href
+        val manifestMap = mutableMapOf<String, String>()
+        val manifestNodes = doc.getElementsByTagName("item")
+        for (i in 0 until manifestNodes.length) {
+            val node = manifestNodes.item(i)
+            val id = node.attributes.getNamedItem("id")?.nodeValue ?: continue
+            val href = node.attributes.getNamedItem("href")?.nodeValue ?: continue
+            manifestMap[id] = if (opfDir.isNotEmpty()) "$opfDir/$href" else href
+        }
+
+        // Find cover item
+        var coverItemId: String? = null
+        val metaNodes = doc.getElementsByTagName("meta")
+        for (i in 0 until metaNodes.length) {
+            val node = metaNodes.item(i)
+            if (node.attributes.getNamedItem("name")?.nodeValue == "cover") {
+                coverItemId = node.attributes.getNamedItem("content")?.nodeValue
+                break
+            }
+        }
+
+        // Build spine order
+        val spineItems = mutableListOf<String>()
+        val spineNodes = doc.getElementsByTagName("itemref")
+        for (i in 0 until spineNodes.length) {
+            val node = spineNodes.item(i)
+            val idref = node.attributes.getNamedItem("idref")?.nodeValue ?: continue
+            val href = manifestMap[idref] ?: continue
+            spineItems.add(href)
+        }
+
+        return OpfData(title, author, spineItems, manifestMap, coverItemId)
+    }
+
+    private fun extractCover(entries: Map<String, ByteArray>, opf: OpfData, opfDir: String): String? {
+        val coverHref = opf.coverItemId?.let { opf.manifest[it] } ?: return null
+        val coverData = entries[coverHref] ?: return null
+
+        // Verify it's actually an image
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(coverData, 0, coverData.size, options)
+        if (options.outWidth <= 0) return null
+
+        val coverFile = File(context.cacheDir, "covers/${coverHref.hashCode()}.jpg")
+        coverFile.parentFile?.mkdirs()
+        coverFile.writeBytes(coverData)
+        return coverFile.absolutePath
+    }
+
+    private fun extractText(html: String): String {
+        val doc = Jsoup.parse(html)
+        val body = doc.body() ?: return ""
+        val sb = StringBuilder()
+        extractTextRecursive(body, sb)
+        return sb.toString().trim()
+    }
+
+    private fun extractTextRecursive(element: Element, sb: StringBuilder) {
+        for (node in element.childNodes()) {
+            when (node) {
+                is TextNode -> {
+                    val text = node.text().trim()
+                    if (text.isNotEmpty()) {
+                        if (sb.isNotEmpty() && !sb.endsWith(' ') && !sb.endsWith('\n')) {
+                            sb.append(' ')
+                        }
+                        sb.append(text)
+                    }
+                }
+                is Element -> {
+                    val tag = node.tagName().lowercase()
+                    if (tag in setOf("p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "br", "li", "blockquote")) {
+                        if (sb.isNotEmpty() && !sb.endsWith('\n')) {
+                            sb.append('\n')
+                        }
+                    }
+                    extractTextRecursive(node, sb)
+                    if (tag in setOf("p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote")) {
+                        if (sb.isNotEmpty() && !sb.endsWith('\n')) {
+                            sb.append('\n')
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun extractChapterTitle(html: String): String? {
+        val doc = Jsoup.parse(html)
+        // Try heading tags in order
+        for (tag in listOf("h1", "h2", "h3", "title")) {
+            val el = doc.selectFirst(tag)
+            if (el != null) {
+                val text = el.text().trim()
+                if (text.isNotEmpty()) return text
+            }
+        }
+        return null
+    }
+
+    private fun tokenize(text: String): List<String> {
+        return text.split(Regex("\\s+")).filter { it.isNotBlank() }
+    }
+}

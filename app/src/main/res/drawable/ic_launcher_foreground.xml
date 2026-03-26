@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Vertical focus bar -->
+    <path
+        android:fillColor="#6B9FFF"
+        android:pathData="M52,28 L56,28 L56,80 L52,80 Z" />
+    <!-- Left chevron (fast reading indicator) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,42 L44,54 L34,66 L38,66 L48,54 L38,42 Z"
+        android:fillAlpha="0.6" />
+    <!-- Right text lines -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M62,46 L78,46 L78,48 L62,48 Z"
+        android:fillAlpha="0.4" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M62,53 L74,53 L74,55 L62,55 Z"
+        android:fillAlpha="0.4" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M62,60 L76,60 L76,62 L62,62 Z"
+        android:fillAlpha="0.4" />
+</vector>
