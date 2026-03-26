@@ -206,7 +206,7 @@ class EpubParser(private val context: Context) {
         for (node in element.childNodes()) {
             when (node) {
                 is TextNode -> {
-                    val text = node.wholeText()
+                    val text = node.getWholeText()
                     // Collapse internal whitespace but preserve word boundaries
                     val collapsed = text.replace(Regex("\\s+"), " ")
                     if (collapsed.isNotBlank()) {
